@@ -1,0 +1,9 @@
+# Local environment config — never commit secrets
+.env
+
+# Docker build cache artifacts
+docker/gitnexus/.docker-build-cache/
+.gitnexus
+.claude/*
+AGENTS.md
+CLAUDE.md

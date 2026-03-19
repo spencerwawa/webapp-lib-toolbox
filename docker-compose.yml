@@ -1,0 +1,183 @@
+# ============================================================
+# LLM Stack — Ollama + Open WebUI + GitNexus (Web UI + Serve)
+# ============================================================
+# Four services on a shared internal Docker network:
+#
+#   ollama          :11434  LLM backend — runs and manages local models
+#   open-webui      :3000   Chat UI connected to Ollama
+#   gitnexus-web    :8080   GitNexus graph explorer (React/WASM static site)
+#   gitnexus-serve  :4747   GitNexus HTTP backend — exposes indexed repos
+#                           to the browser UI so the neural net graph loads
+#
+# Quick start:
+#   cp .env.example .env            # fill in paths (see .env.example)
+#   docker compose up -d            # builds gitnexus images on first run (~2 min)
+#   docker exec ollama ollama pull llama3.2   # pull a model
+#
+# Then open:
+#   http://localhost:3000   → Open WebUI (chat)
+#   http://localhost:8080   → GitNexus (neural net / graph explorer)
+#
+# On the GitNexus page click "Connect to local server" — it auto-detects
+# gitnexus-serve at http://localhost:4747 and loads your indexed repos.
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # Ollama — LLM backend
+  # Models stored in a named volume (persists across rebuilds,
+  # shared with open-webui).
+  # ----------------------------------------------------------
+  ollama:
+    image: ollama/ollama:${OLLAMA_DOCKER_TAG:-latest}
+    container_name: ollama
+    pull_policy: always
+    restart: unless-stopped
+    tty: true
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - llm-network
+    # Uncomment for NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ----------------------------------------------------------
+  # Open WebUI — Chat interface for Ollama
+  # Connects to Ollama on the shared Docker network.
+  # Chat history and settings stored in open-webui-data volume.
+  # ----------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${WEBUI_DOCKER_TAG:-main}
+    container_name: open-webui
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-change-me-in-production}
+      - WEBUI_AUTH=${WEBUI_AUTH:-false}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - llm-network
+
+  # ----------------------------------------------------------
+  # GitNexus Web UI — Graph explorer (React/WASM static site)
+  # Built from gitnexus-web source. Served by nginx with the
+  # COOP/COEP headers required for KuzuDB WASM + SharedArrayBuffer.
+  #
+  # After the page loads, click "Connect to local server" to link
+  # it to gitnexus-serve at http://localhost:4747.
+  # ----------------------------------------------------------
+  gitnexus-web:
+    build:
+      context: ${GITNEXUS_WEB_PATH:-../webapp-ui-gitnexus/gitnexus-web}
+      dockerfile: ${WEBAPP_LIB_TOOLBOX_PATH:-.}/docker/gitnexus/Dockerfile
+    image: gitnexus-web:local
+    pull_policy: build
+    container_name: gitnexus-web
+    restart: unless-stopped
+    ports:
+      - "${GITNEXUS_PORT:-8080}:80"
+    networks:
+      - llm-network
+
+  # ----------------------------------------------------------
+  # GitNexus Serve — HTTP backend for the web UI
+  # Runs `gitnexus serve --host 0.0.0.0` so the browser-side
+  # graph explorer can query your locally-indexed repos via REST.
+  #
+  # HOW REPOS ARE EXPOSED:
+  #   The host's ~/.gitnexus/ directory is mounted so the server
+  #   sees your registry.json (populated by `gitnexus analyze`).
+  #   Each repo root is then mounted at the same absolute path it
+  #   was indexed at — this is critical because paths in the DB
+  #   are absolute and must match exactly.
+  #
+  # ADD YOUR REPOS:
+  #   Uncomment the bind mount blocks below and set WORKSPACE_PATH
+  #   in .env to your workspace root (e.g. ~/Desktop/workspace).
+  #
+  # After indexing a new repo with `gitnexus analyze`, run:
+  #   docker compose restart gitnexus-serve
+  # ----------------------------------------------------------
+  gitnexus-serve:
+    build:
+      context: ${GITNEXUS_CLI_PATH:-../webapp-ui-gitnexus/gitnexus}
+      dockerfile: ${WEBAPP_LIB_TOOLBOX_PATH:-.}/docker/gitnexus-serve/Dockerfile
+    image: gitnexus-serve:local
+    pull_policy: build
+    container_name: gitnexus-serve
+    restart: unless-stopped
+    ports:
+      - "${GITNEXUS_SERVE_PORT:-4747}:4747"
+    volumes:
+      # Mount the host's global GitNexus registry & config directory.
+      # This is where `gitnexus analyze` stores registry.json.
+      - type: bind
+        source: ${GITNEXUS_REGISTRY_PATH:-~/.gitnexus}
+        target: /root/.gitnexus
+
+      # ── Repo mounts ────────────────────────────────────────
+      # Mount each repo at its EXACT original absolute path.
+      # The index DB stores absolute file paths, so the mount
+      # target must match the source path precisely.
+      #
+      # Uncomment and duplicate for each indexed repo:
+      #
+      # - type: bind
+      #   source: ${WORKSPACE_PATH}/your-repo
+      #   target: ${WORKSPACE_PATH}/your-repo
+      #   read_only: true
+      #
+      # - type: bind
+      #   source: ${WORKSPACE_PATH}/your-other-repo
+      #   target: ${WORKSPACE_PATH}/your-other-repo
+      #   read_only: true
+      #
+      # - type: bind
+      #   source: ${WORKSPACE_PATH}/webapp-ui-gitnexus
+      #   target: ${WORKSPACE_PATH}/webapp-ui-gitnexus
+      #   read_only: true
+      # ── End repo mounts ────────────────────────────────────
+    networks:
+      - llm-network
+
+# ----------------------------------------------------------
+# Networks
+# ----------------------------------------------------------
+networks:
+  llm-network:
+    driver: bridge
+
+# ----------------------------------------------------------
+# Volumes
+# ----------------------------------------------------------
+volumes:
+  # Shared model store — ollama downloads once, open-webui reads from here
+  ollama-models:
+    name: ollama-models
+  # Open WebUI chat history, users, settings
+  open-webui-data:
+    name: open-webui-data
