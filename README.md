@@ -40,20 +40,36 @@ cp .env.example .env
 # Edit .env — set GITNEXUS_WEB_PATH, GITNEXUS_CLI_PATH,
 #             WEBAPP_LIB_TOOLBOX_PATH, GITNEXUS_REGISTRY_PATH, WORKSPACE_PATH
 
-# 3. (First time) Index a repo so gitnexus-serve has something to serve
+# 3. (Corporate/VPN networks) Generate the proxy CA cert bundle
+#    Ollama needs this to pull models through TLS-inspecting proxies
+#    First find your proxy CN: openssl s_client -connect registry.ollama.ai:443 2>/dev/null | grep issuer
+mkdir -p certs
+python3 -c "
+import subprocess, re, sys
+proxy_name = sys.argv[1] if len(sys.argv) > 1 else 'your-proxy-name'
+out = subprocess.check_output(['security','find-certificate','-a','-c', proxy_name,'-p','/Library/Keychains/System.keychain'], stderr=subprocess.DEVNULL).decode()
+open('certs/corporate-proxy.pem','w').write(out)
+print(f'Wrote {len(re.findall(\"BEGIN CERTIFICATE\",out))} certs to certs/corporate-proxy.pem')
+" your-proxy-cn
+# Skip step 3 if not on a corporate network — remove the cert volume
+# from the ollama service in docker-compose.yml if not needed
+
+# 4. (First time) Index a repo so gitnexus-serve has something to serve
 cd ../your-repo && npx gitnexus analyze && cd -
 
-# 4. Uncomment your repo mounts in docker-compose.yml (gitnexus-serve volumes)
+# 5. Uncomment your repo mounts in docker-compose.yml (gitnexus-serve volumes)
 
-# 5. Start everything (builds gitnexus images on first run — ~2 min)
+# 6. Start everything (builds gitnexus images on first run — ~2 min)
 docker compose up -d
 
-# 6. Pull a model into Ollama (e.g. llama3.2)
+# 7. Pull a model into Ollama (e.g. llama3.2)
 docker exec ollama ollama pull llama3.2
 ```
 
 - Open [http://localhost:3000](http://localhost:3000) → **Open WebUI** — create an admin account on first launch
 - Open [http://localhost:8080](http://localhost:8080) → **GitNexus graph explorer** — click "Connect to local server"
+
+> **Shortcut**: Source `skills/docker.sh` in your shell for `dc` aliases — `dcup`, `dcb`, `olpull llama3.2`, etc.
 
 ---
 
@@ -86,48 +102,37 @@ volumes:
 
 ### Common Commands
 
+> **Tip**: Source `skills/docker.sh` for short aliases. Add this to your `~/.bashrc` or `scripts/personal.sh` in `tool-development-utility`:
+> ```bash
+> source /absolute/path/to/webapp-lib-toolbox/skills/docker.sh
+> ```
+
+| Alias | Full command | Purpose |
+|---|---|---|
+| `dcup` | `docker compose up -d` | Start all services |
+| `dcdown` | `docker compose down` | Stop all (volumes preserved) |
+| `dcb` | `docker compose build` | Build all images |
+| `dcbup` | `docker compose build && docker compose up -d` | Build then start |
+| `dcbnc` | `docker compose build --no-cache` | Build ignoring cache |
+| `dcrestart` | `docker compose restart` | Restart all services |
+| `dcl` | `docker compose logs -f` | Tail all logs |
+| `dcps` | `docker compose ps` | Show running services |
+| `ollist` | `docker exec ollama ollama list` | List downloaded models |
+| `olpull` | `docker exec ollama ollama pull` | Pull a model |
+| `olrm` | `docker exec ollama ollama rm` | Remove a model |
+
 ```bash
-# Start all services
-docker compose up -d
-
-# Start a single service
-docker compose up -d ollama
-
-# Rebuild after source changes
+# Rebuild a single service after source changes
 docker compose build gitnexus-web && docker compose up -d gitnexus-web
-docker compose build gitnexus-serve && docker compose up -d gitnexus-serve
 
 # Reload after indexing a new repo (no rebuild needed)
 docker compose restart gitnexus-serve
 
-# Stop all (volumes preserved)
-docker compose down
-
-# Stop all and delete volumes (model data will be lost)
+# Stop all and delete volumes ⚠️  model downloads will be lost
 docker compose down -v
 
-# Tail logs
-docker compose logs -f
-docker compose logs -f gitnexus-serve
-
-# Pull latest images (ollama + open-webui)
-docker compose pull ollama open-webui
-docker compose up -d
-```
-
-### Ollama Model Management
-
-```bash
-# List downloaded models
-docker exec ollama ollama list
-
-# Pull a model
-docker exec ollama ollama pull llama3.2
-docker exec ollama ollama pull codellama
-docker exec ollama ollama pull mistral
-
-# Remove a model
-docker exec ollama ollama rm llama3.2
+# Pull latest upstream images (ollama + open-webui)
+docker compose pull ollama open-webui && docker compose up -d
 ```
 
 ---
@@ -139,6 +144,10 @@ webapp-lib-toolbox/
 ├── docker-compose.yml              # Main orchestration (4 services)
 ├── .env                            # Local env config (gitignored)
 ├── .env.example                    # Template — copy to .env
+├── certs/                          # Corporate proxy CA certs (gitignored)
+│   └── corporate-proxy.pem         # Generated locally — see Quick Start step 3
+├── skills/
+│   └── docker.sh                   # Shell aliases: dcup, dcb, olpull, etc.
 ├── docker/
 │   ├── gitnexus/
 │   │   ├── Dockerfile              # gitnexus-web: Node (Vite) → nginx
@@ -192,6 +201,38 @@ The other projects do **not** need to be nested inside `webapp-lib-toolbox`. The
 ```
 
 > **GitNexus Web** is a fully browser-side app. It connects to `gitnexus-serve` directly from your browser at `http://localhost:4747`, **not** through the Docker network. The `GITNEXUS_SERVE_PORT` env var controls which host port it listens on.
+
+---
+
+### TLS / Corporate Network
+
+On networks with TLS inspection (e.g. enterprise proxies that re-sign HTTPS traffic), Ollama will fail to pull models with a certificate error:
+```
+Error: pull model manifest: tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+**Step 1 — Find your proxy's certificate name:**
+```bash
+openssl s_client -connect registry.ollama.ai:443 2>/dev/null | grep issuer
+# Look for the CN= value, e.g. CN=myproxy.company.com
+```
+
+**Step 2 — Generate the cert bundle and restart Ollama:**
+```bash
+mkdir -p certs
+python3 -c "
+import subprocess, re, sys
+proxy_name = sys.argv[1] if len(sys.argv) > 1 else 'your-proxy-name'
+out = subprocess.check_output(['security','find-certificate','-a','-c', proxy_name,'-p','/Library/Keychains/System.keychain'], stderr=subprocess.DEVNULL).decode()
+open('certs/corporate-proxy.pem','w').write(out)
+print(f'Wrote {len(re.findall(\"BEGIN CERTIFICATE\",out))} certs')
+" <your-proxy-cn>
+docker compose up -d --force-recreate ollama
+```
+
+The `certs/` directory is gitignored — the cert file is generated locally and never committed.
+
+> **Not on a corporate network?** Remove the `certs/` volume mount and the `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` env vars from the `ollama` service in `docker-compose.yml`.
 
 ---
 

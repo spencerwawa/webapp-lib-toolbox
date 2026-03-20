@@ -39,6 +39,16 @@ services:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-models:/root/.ollama
+      # Corporate proxy CA certs — required on networks with TLS inspection
+      # Generate certs/corporate-proxy.pem first — see README TLS section
+      - type: bind
+        source: ${WEBAPP_LIB_TOOLBOX_PATH:-.}/certs/corporate-proxy.pem
+        target: /etc/ollama/certs/corporate-ca.pem
+        read_only: true
+    environment:
+      # Point Ollama at the corporate CA bundle
+      - SSL_CERT_FILE=/etc/ollama/certs/corporate-ca.pem
+      - REQUESTS_CA_BUNDLE=/etc/ollama/certs/corporate-ca.pem
     networks:
       - llm-network
     # Uncomment for NVIDIA GPU:

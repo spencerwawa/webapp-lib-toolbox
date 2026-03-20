@@ -7,3 +7,6 @@ docker/gitnexus/.docker-build-cache/
 .claude/*
 AGENTS.md
 CLAUDE.md
+
+# Corporate proxy certificates (generated locally — never commit)
+certs/corporate-proxy.pem
