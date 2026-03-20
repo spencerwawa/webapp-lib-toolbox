@@ -156,20 +156,18 @@ services:
       #
       # Uncomment and duplicate for each indexed repo:
       #
-      # - type: bind
-      #   source: ${WORKSPACE_PATH}/your-repo
-      #   target: ${WORKSPACE_PATH}/your-repo
-      #   read_only: true
-      #
-      # - type: bind
-      #   source: ${WORKSPACE_PATH}/your-other-repo
-      #   target: ${WORKSPACE_PATH}/your-other-repo
-      #   read_only: true
-      #
-      # - type: bind
-      #   source: ${WORKSPACE_PATH}/webapp-ui-gitnexus
-      #   target: ${WORKSPACE_PATH}/webapp-ui-gitnexus
-      #   read_only: true
+      - type: bind
+        source: ${WORKSPACE_PATH}/webapp-ui-gitnexus
+        target: ${WORKSPACE_PATH}/webapp-ui-gitnexus
+        read_only: true
+      - type: bind
+        source: ${WORKSPACE_PATH}/webapp-lib-toolbox
+        target: ${WORKSPACE_PATH}/webapp-lib-toolbox
+        read_only: true
+      - type: bind
+        source: ${WORKSPACE_PATH}/tool-development-utility
+        target: ${WORKSPACE_PATH}/tool-development-utility
+        read_only: true
       # ── End repo mounts ────────────────────────────────────
     networks:
       - llm-network

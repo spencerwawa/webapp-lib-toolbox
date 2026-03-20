@@ -15,9 +15,10 @@
 # serve process discovers which repos are available.
 # ============================================================
 
-# Use full Debian-based node for the build stage — it ships with python3/make/g++
-# already installed, avoiding Alpine apk TLS issues and native addon failures.
-FROM node:20 AS builder
+# Single-stage build on full Debian node:20 — avoids cross-arch native binary
+# mismatches that occur when copying node_modules between stages.
+# python3/make/g++ are pre-installed so kuzu and tree-sitter compile correctly.
+FROM node:20
 
 WORKDIR /app
 
@@ -39,23 +40,6 @@ RUN npm install --ignore-scripts && \
 # Call tsc via its full path since --ignore-scripts skips bin symlinking.
 COPY . .
 RUN node_modules/typescript/bin/tsc
-
-# --- Runtime stage -----------------------------------------
-FROM node:20-alpine AS serve
-
-WORKDIR /app
-
-# Corporate proxy SSL — must set before any npm install
-RUN npm config set strict-ssl false
-
-# Copy compiled output and production runtime files
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/scripts ./scripts
-COPY --from=builder /app/vendor ./vendor
-
-# Install production deps only (no devDeps), skip optional Swift parser
-RUN npm install --omit=dev --ignore-scripts
 
 # Ensure the global registry directory exists (will be replaced by the bind mount)
 RUN mkdir -p /root/.gitnexus
